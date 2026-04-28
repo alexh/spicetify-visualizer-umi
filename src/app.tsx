@@ -11,6 +11,7 @@ import UmiGaugeCluster from "./components/renderer/umi/UmiGaugeCluster";
 import UmiKaleidoscope from "./components/renderer/umi/UmiKaleidoscope";
 import UmiSpirograph from "./components/renderer/umi/UmiSpirograph";
 import UmiTieDyeBloom from "./components/renderer/umi/UmiTieDyeBloom";
+import UmiTerrain from "./components/renderer/umi/UmiTerrain";
 import { MainMenuButton } from "./menu";
 import { createVisualizerWindow } from "./window";
 import { useFullscreenElement } from "./hooks";
@@ -58,6 +59,11 @@ const RENDERERS: RendererDefinition[] = [
 		id: "umi-tiedye",
 		name: "UMI / Tie-Dye Bloom",
 		renderer: UmiTieDyeBloom
+	},
+	{
+		id: "umi-terrain",
+		name: "UMI / Terrain (3D)",
+		renderer: UmiTerrain
 	},
 	{
 		id: "ncs",
