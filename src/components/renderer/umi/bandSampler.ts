@@ -53,23 +53,39 @@ export function sampleBands(rhythm: RhythmString, t: number): number[] {
 }
 
 /**
- * Reduces a many-channel rhythm into a fixed `bandCount` by averaging
- * neighbouring channels. Useful when a renderer wants e.g. exactly
- * 16 columns regardless of how many channels Spotify gave us.
+ * Resamples a rhythm-band array to a fixed `bandCount`:
+ *  - if input has more channels than requested, averages neighbours
+ *    (downsample)
+ *  - if input has fewer, linearly interpolates between adjacent
+ *    channels (upsample) so we don't get gaps at every Nth column.
+ * Useful when a renderer wants e.g. exactly 24 columns regardless
+ * of how many channels Spotify shipped.
  */
 export function downsampleBands(bands: number[], bandCount: number): number[] {
 	if (bands.length === 0) return new Array(bandCount).fill(0);
 	if (bands.length === bandCount) return bands;
 
+	// Upsample (input shorter than requested) — linear interpolation
+	if (bands.length < bandCount) {
+		const out: number[] = new Array(bandCount);
+		for (let i = 0; i < bandCount; i++) {
+			const pos = bandCount === 1 ? 0 : (i / (bandCount - 1)) * (bands.length - 1);
+			const lo = Math.floor(pos);
+			const hi = Math.min(bands.length - 1, lo + 1);
+			const frac = pos - lo;
+			out[i] = bands[lo] * (1 - frac) + bands[hi] * frac;
+		}
+		return out;
+	}
+
+	// Downsample (input longer than requested) — average groups
 	const out: number[] = new Array(bandCount).fill(0);
 	const counts: number[] = new Array(bandCount).fill(0);
-
 	for (let i = 0; i < bands.length; i++) {
 		const target = Math.min(bandCount - 1, Math.floor((i / bands.length) * bandCount));
 		out[target] += bands[i];
 		counts[target]++;
 	}
-
 	for (let i = 0; i < bandCount; i++) {
 		if (counts[i] > 0) out[i] /= counts[i];
 	}
