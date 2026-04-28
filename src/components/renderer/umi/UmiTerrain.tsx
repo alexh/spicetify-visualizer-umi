@@ -6,9 +6,8 @@
 //
 // Bypasses AnimatedCanvas (three.js manages its own canvas + GL ctx).
 
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-	BufferAttribute,
 	Color,
 	Fog,
 	Mesh,
