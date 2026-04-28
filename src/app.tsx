@@ -5,6 +5,9 @@ import NCSVisualizer from "./components/renderer/NCSVisualizer";
 import { ErrorData, ErrorHandlerContext, ErrorRecovery } from "./error";
 import DebugVisualizer from "./components/renderer/DebugVisualizer";
 import SpectrumVisualizer from "./components/renderer/SpectrumVisualizer";
+import UmiHazardSpectrum from "./components/renderer/umi/UmiHazardSpectrum";
+import UmiOscilloscope from "./components/renderer/umi/UmiOscilloscope";
+import UmiGaugeCluster from "./components/renderer/umi/UmiGaugeCluster";
 import { MainMenuButton } from "./menu";
 import { createVisualizerWindow } from "./window";
 import { useFullscreenElement } from "./hooks";
@@ -23,6 +26,21 @@ export type RendererDefinition = {
 };
 
 const RENDERERS: RendererDefinition[] = [
+	{
+		id: "umi-hazard",
+		name: "UMI / Hazard Spectrum",
+		renderer: UmiHazardSpectrum
+	},
+	{
+		id: "umi-scope",
+		name: "UMI / Oscilloscope",
+		renderer: UmiOscilloscope
+	},
+	{
+		id: "umi-gauge",
+		name: "UMI / Gauge Cluster",
+		renderer: UmiGaugeCluster
+	},
 	{
 		id: "ncs",
 		name: "NCS",
@@ -64,7 +82,7 @@ export default function App(props: {
 		const searchRenderer = searchParams.get("renderer");
 		if (searchRenderer && validIds.has(searchRenderer)) return searchRenderer;
 
-		return "ncs";
+		return "umi-hazard";
 	});
 	useEffect(() => {
 		const searchParams = new URLSearchParams();
