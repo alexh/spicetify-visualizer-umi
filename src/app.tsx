@@ -8,6 +8,9 @@ import SpectrumVisualizer from "./components/renderer/SpectrumVisualizer";
 import UmiHazardSpectrum from "./components/renderer/umi/UmiHazardSpectrum";
 import UmiOscilloscope from "./components/renderer/umi/UmiOscilloscope";
 import UmiGaugeCluster from "./components/renderer/umi/UmiGaugeCluster";
+import UmiKaleidoscope from "./components/renderer/umi/UmiKaleidoscope";
+import UmiSpirograph from "./components/renderer/umi/UmiSpirograph";
+import UmiTieDyeBloom from "./components/renderer/umi/UmiTieDyeBloom";
 import { MainMenuButton } from "./menu";
 import { createVisualizerWindow } from "./window";
 import { useFullscreenElement } from "./hooks";
@@ -40,6 +43,21 @@ const RENDERERS: RendererDefinition[] = [
 		id: "umi-gauge",
 		name: "UMI / Gauge Cluster",
 		renderer: UmiGaugeCluster
+	},
+	{
+		id: "umi-kaleidoscope",
+		name: "UMI / Kaleidoscope",
+		renderer: UmiKaleidoscope
+	},
+	{
+		id: "umi-spirograph",
+		name: "UMI / Spirograph",
+		renderer: UmiSpirograph
+	},
+	{
+		id: "umi-tiedye",
+		name: "UMI / Tie-Dye Bloom",
+		renderer: UmiTieDyeBloom
 	},
 	{
 		id: "ncs",
