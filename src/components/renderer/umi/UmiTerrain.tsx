@@ -1,29 +1,17 @@
-// UmiTerrain — three.js wireframe terrain that ripples with audio.
-// Multi-octave Perlin-noise base shape; bass drives a centre swell,
-// mids drive a slow wave, highs add a fine shimmer, beats kick a
-// radial impulse from the centre. Camera slowly orbits. Color ramps
-// dark → orange → cream by vertex height; warm-dark fog at distance.
-//
-// Bypasses AnimatedCanvas (three.js manages its own canvas + GL ctx).
+// UmiTerrain — raw WebGL2 raymarched terrain. Mirrors the upstream
+// NCSVisualizer pattern (createShader / createProgram / fullscreen
+// quad / per-frame uniforms) so we don't drag three.js into the
+// spicetify-creator bundle.
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-	Color,
-	Fog,
-	Mesh,
-	PerspectiveCamera,
-	PlaneGeometry,
-	Scene,
-	ShaderMaterial,
-	WebGLRenderer
-} from "three";
-import { binarySearchIndex } from "../../../utils";
+import React, { useCallback, useContext, useMemo } from "react";
+import AnimatedCanvas from "../../AnimatedCanvas";
+import { ErrorHandlerContext, ErrorRecovery } from "../../../error";
 import { RendererProps } from "../../../app";
+import { binarySearchIndex } from "../../../utils";
 import {
 	UMI_PALETTE,
 	getForceUmiPalette,
-	effectiveAccent,
-	subscribeForceUmiPalette
+	effectiveAccent
 } from "./umiPalette";
 import {
 	precomputeRhythm,
@@ -31,258 +19,209 @@ import {
 	downsampleBands,
 	type RhythmString
 } from "./bandSampler";
+import {
+	vertexShader as TERRAIN_VERT_SHADER,
+	fragmentShader as TERRAIN_FRAG_SHADER
+} from "../../../shaders/umi-terrain/terrain";
 
-const TERRAIN_SUBDIVISIONS = 96;
-const TERRAIN_SIZE = 60;
-
-const VERTEX_SHADER = /* glsl */ `
-  uniform float uTime;
-  uniform float uBass;
-  uniform float uMid;
-  uniform float uHigh;
-  uniform float uBeatPulse;
-  varying float vHeight;
-  varying vec3 vWorldPos;
-
-  float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-  }
-  float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i + vec2(0.0, 0.0)),
-                   hash(i + vec2(1.0, 0.0)), u.x),
-               mix(hash(i + vec2(0.0, 1.0)),
-                   hash(i + vec2(1.0, 1.0)), u.x), u.y);
-  }
-
-  void main() {
-    vec3 pos = position;
-
-    // Multi-octave terrain base — slowly drifts on its own
-    float h = 0.0;
-    h += noise(pos.xz * 0.08  + uTime * 0.05) * 2.2;
-    h += noise(pos.xz * 0.20  - uTime * 0.07) * 1.0;
-    h += noise(pos.xz * 0.55  + uTime * 0.10) * 0.45;
-
-    float dist = length(pos.xz);
-
-    // Bass: ripple radiating from centre
-    float bassRipple = sin(dist * 0.32 - uTime * 2.4) * uBass * 1.6;
-    // Mid: broad slow swell
-    float midSwell = noise(pos.xz * 0.06 + uTime * 0.10) * uMid * 2.2;
-    // High: fine shimmering noise
-    float highShimmer = (noise(pos.xz * 1.6 + uTime * 0.55) - 0.5) * uHigh * 0.7;
-    // Beat: gaussian bump at centre
-    float beatBump = uBeatPulse * exp(-dist * dist * 0.012) * 3.5;
-
-    pos.y += h + bassRipple + midSwell + highShimmer + beatBump;
-
-    vHeight = pos.y;
-    vWorldPos = pos;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-  }
-`;
-
-const FRAGMENT_SHADER = /* glsl */ `
-  precision highp float;
-  uniform vec3 uAccent;
-  uniform vec3 uCream;
-  uniform vec3 uDark;
-  uniform float uBeatPulse;
-  varying float vHeight;
-  varying vec3 vWorldPos;
-
-  void main() {
-    // Height ramp — dark valleys → orange ridges → cream caps
-    float t = clamp((vHeight + 2.5) / 8.0, 0.0, 1.0);
-    vec3 color = mix(uDark, uAccent, smoothstep(0.05, 0.6, t));
-    color = mix(color, uCream, smoothstep(0.78, 1.0, t));
-
-    // Beat pulse boosts brightness uniformly so the wireframe
-    // 'flashes' on each kick
-    color = mix(color, uCream, uBeatPulse * 0.18);
-
-    // Radial fog into warm-dark
-    float dist = length(vWorldPos.xz);
-    float fog = clamp((dist - 12.0) / 22.0, 0.0, 1.0);
-    color = mix(color, uDark, fog * 0.95);
-
-    gl_FragColor = vec4(color, 1.0);
-  }
-`;
-
-type RhythmData = {
+type CanvasData = {
 	rhythm: RhythmString;
 	beats: number[];
+	themeColor: Spicetify.Color;
 };
 
+type RendererState =
+	| { isError: true }
+	| {
+			isError: false;
+			program: WebGLProgram;
+			quadBuffer: WebGLBuffer;
+			inPositionLoc: number;
+			uTimeLoc: WebGLUniformLocation | null;
+			uBassLoc: WebGLUniformLocation | null;
+			uMidLoc: WebGLUniformLocation | null;
+			uHighLoc: WebGLUniformLocation | null;
+			uBeatPulseLoc: WebGLUniformLocation | null;
+			uResolutionLoc: WebGLUniformLocation | null;
+			uAccentLoc: WebGLUniformLocation | null;
+			uCreamLoc: WebGLUniformLocation | null;
+			uDarkLoc: WebGLUniformLocation | null;
+			startTime: number;
+	  };
+
+function hexToRgbF(hex: string): [number, number, number] {
+	const h = hex.replace(/^#/, "");
+	const full = h.length === 3 ? h.split("").map(c => c + c).join("") : h;
+	const r = parseInt(full.slice(0, 2), 16) / 255;
+	const g = parseInt(full.slice(2, 4), 16) / 255;
+	const b = parseInt(full.slice(4, 6), 16) / 255;
+	return [r, g, b];
+}
+
 export default function UmiTerrain(props: RendererProps) {
-	const containerRef = useRef<HTMLDivElement | null>(null);
+	const onError = useContext(ErrorHandlerContext);
 
-	const rhythmData = useMemo<RhythmData>(() => {
-		if (!props.audioAnalysis) return { rhythm: [] as RhythmString, beats: [] };
-		if (props.audioAnalysis.track.rhythm_version !== 1) {
-			return { rhythm: [] as RhythmString, beats: [] };
-		}
+	const trackData = useMemo<CanvasData | null>(() => {
+		if (!props.audioAnalysis) return null;
+		const rhythm =
+			props.audioAnalysis.track.rhythm_version === 1
+				? precomputeRhythm(props.audioAnalysis.track.rhythmstring)
+				: ([] as RhythmString);
 		return {
-			rhythm: precomputeRhythm(props.audioAnalysis.track.rhythmstring),
-			beats: props.audioAnalysis.beats.map(b => b.start)
+			rhythm,
+			beats: props.audioAnalysis.beats.map(b => b.start),
+			themeColor: props.themeColor
 		};
-	}, [props.audioAnalysis]);
+	}, [props.audioAnalysis, props.themeColor]);
 
-	useEffect(() => {
-		const container = containerRef.current;
-		if (!container) return;
-		const win = container.ownerDocument.defaultView;
-		if (!win) return;
+	const onInit = useCallback(
+		(gl: WebGL2RenderingContext | null): RendererState => {
+			if (!gl) {
+				onError("Error: WebGL2 is not supported", ErrorRecovery.NONE);
+				return { isError: true };
+			}
 
-		// Sizing
-		let width = container.clientWidth || 1;
-		let height = container.clientHeight || 1;
-		const dpr = Math.min(2, win.devicePixelRatio || 1);
+			const compile = (type: number, source: string, name: string): WebGLShader | null => {
+				const sh = gl.createShader(type)!;
+				gl.shaderSource(sh, source);
+				gl.compileShader(sh);
+				if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS) && !gl.isContextLost()) {
+					const log = gl.getShaderInfoLog(sh);
+					console.error(`[UmiTerrain] '${name}' shader compile error`, log);
+					onError(`Error: Failed to compile '${name}' shader`, ErrorRecovery.NONE);
+					return null;
+				}
+				return sh;
+			};
 
-		// Three core
-		const scene = new Scene();
-		scene.background = new Color(UMI_PALETTE.warmDarkDeep);
-		scene.fog = new Fog(UMI_PALETTE.warmDarkDeep, 24, 70);
+			const link = (vs: WebGLShader, fs: WebGLShader): WebGLProgram | null => {
+				const p = gl.createProgram()!;
+				gl.attachShader(p, vs);
+				gl.attachShader(p, fs);
+				gl.linkProgram(p);
+				if (!gl.getProgramParameter(p, gl.LINK_STATUS) && !gl.isContextLost()) {
+					const log = gl.getProgramInfoLog(p);
+					console.error(`[UmiTerrain] program link error`, log);
+					onError("Error: Failed to link terrain shader program", ErrorRecovery.NONE);
+					return null;
+				}
+				return p;
+			};
 
-		const camera = new PerspectiveCamera(58, width / height, 0.1, 200);
-		camera.position.set(0, 9, 20);
-		camera.lookAt(0, 0, 0);
+			const vs = compile(gl.VERTEX_SHADER, TERRAIN_VERT_SHADER, "terrain vertex");
+			if (!vs) return { isError: true };
+			const fs = compile(gl.FRAGMENT_SHADER, TERRAIN_FRAG_SHADER, "terrain fragment");
+			if (!fs) return { isError: true };
+			const program = link(vs, fs);
+			if (!program) return { isError: true };
 
-		const renderer = new WebGLRenderer({ antialias: true, alpha: false });
-		renderer.setSize(width, height);
-		renderer.setPixelRatio(dpr);
-		renderer.domElement.style.display = "block";
-		renderer.domElement.style.width = "100%";
-		renderer.domElement.style.height = "100%";
-		container.appendChild(renderer.domElement);
+			const quadBuffer = gl.createBuffer()!;
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+			// prettier-ignore
+			gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+				-1, -1,
+				 1, -1,
+				-1,  1,
+				 1,  1
+			]), gl.STATIC_DRAW);
 
-		// Terrain mesh
-		const geometry = new PlaneGeometry(
-			TERRAIN_SIZE,
-			TERRAIN_SIZE,
-			TERRAIN_SUBDIVISIONS,
-			TERRAIN_SUBDIVISIONS
-		);
-		geometry.rotateX(-Math.PI / 2);
-		// Mark UVs as static; not used in shader but kept for completeness
-		void (geometry.attributes.uv as BufferAttribute);
+			return {
+				isError: false,
+				program,
+				quadBuffer,
+				inPositionLoc: gl.getAttribLocation(program, "inPosition"),
+				uTimeLoc: gl.getUniformLocation(program, "uTime"),
+				uBassLoc: gl.getUniformLocation(program, "uBass"),
+				uMidLoc: gl.getUniformLocation(program, "uMid"),
+				uHighLoc: gl.getUniformLocation(program, "uHigh"),
+				uBeatPulseLoc: gl.getUniformLocation(program, "uBeatPulse"),
+				uResolutionLoc: gl.getUniformLocation(program, "uResolution"),
+				uAccentLoc: gl.getUniformLocation(program, "uAccent"),
+				uCreamLoc: gl.getUniformLocation(program, "uCream"),
+				uDarkLoc: gl.getUniformLocation(program, "uDark"),
+				startTime: performance.now()
+			};
+		},
+		[onError]
+	);
 
-		const initialAccent = new Color(
-			getForceUmiPalette() ? UMI_PALETTE.orange : effectiveAccent(props.themeColor)
-		);
+	const onResize = useCallback(
+		(gl: WebGL2RenderingContext | null, state: RendererState) => {
+			if (state.isError || !gl) return;
+			gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+		},
+		[]
+	);
 
-		const uniforms = {
-			uTime: { value: 0 },
-			uBass: { value: 0 },
-			uMid: { value: 0 },
-			uHigh: { value: 0 },
-			uBeatPulse: { value: 0 },
-			uAccent: { value: initialAccent },
-			uCream: { value: new Color(UMI_PALETTE.cream) },
-			uDark: { value: new Color(UMI_PALETTE.warmDarkDeep) }
-		};
+	const onRender = useCallback(
+		(
+			gl: WebGL2RenderingContext | null,
+			data: CanvasData | null,
+			state: RendererState
+		) => {
+			if (state.isError || !gl || !data) return;
 
-		const material = new ShaderMaterial({
-			vertexShader: VERTEX_SHADER,
-			fragmentShader: FRAGMENT_SHADER,
-			uniforms,
-			wireframe: true
-		});
+			gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+			gl.clearColor(0, 0, 0, 1);
+			gl.clear(gl.COLOR_BUFFER_BIT);
 
-		const terrain = new Mesh(geometry, material);
-		scene.add(terrain);
+			gl.useProgram(state.program);
 
-		// React to "Force UMI palette" toggle changes
-		const unsubPalette = subscribeForceUmiPalette(() => {
-			const accent = getForceUmiPalette()
-				? UMI_PALETTE.orange
-				: effectiveAccent(props.themeColor);
-			uniforms.uAccent.value.set(accent);
-		});
+			gl.bindBuffer(gl.ARRAY_BUFFER, state.quadBuffer);
+			gl.enableVertexAttribArray(state.inPositionLoc);
+			gl.vertexAttribPointer(state.inPositionLoc, 2, gl.FLOAT, false, 0, 0);
 
-		// Resize observer keeps things crisp on window resize / fullscreen
-		const ro = new win.ResizeObserver(() => {
-			width = container.clientWidth || 1;
-			height = container.clientHeight || 1;
-			renderer.setSize(width, height);
-			camera.aspect = width / height;
-			camera.updateProjectionMatrix();
-		});
-		ro.observe(container);
-
-		// Render loop
-		let frameId = 0;
-		const start = performance.now();
-
-		const animate = () => {
-			const elapsed = (performance.now() - start) / 1000;
-			uniforms.uTime.value = elapsed;
-
-			// Bands → low / mid / high
+			const elapsed = (performance.now() - state.startTime) / 1000;
 			const progress = Spicetify.Player.getProgress() / 1000;
-			if (rhythmData.rhythm.length > 0) {
-				const raw = sampleBands(rhythmData.rhythm, progress);
+
+			let bass = 0, mid = 0, high = 0;
+			if (data.rhythm.length > 0) {
+				const raw = sampleBands(data.rhythm, progress);
 				const three = downsampleBands(raw, 3);
-				uniforms.uBass.value = three[0] ?? 0;
-				uniforms.uMid.value = three[1] ?? 0;
-				uniforms.uHigh.value = three[2] ?? 0;
-			} else {
-				uniforms.uBass.value = 0;
-				uniforms.uMid.value = 0;
-				uniforms.uHigh.value = 0;
+				bass = three[0] ?? 0;
+				mid = three[1] ?? 0;
+				high = three[2] ?? 0;
 			}
 
-			// Beat pulse — exponentially decays, peaks at each beat onset
-			if (rhythmData.beats.length > 0) {
-				const idx = binarySearchIndex(rhythmData.beats, b => b, progress);
-				const beatStart = idx >= 0 && idx < rhythmData.beats.length ? rhythmData.beats[idx] : 0;
+			let beatPulse = 0;
+			if (data.beats.length > 0) {
+				const idx = binarySearchIndex(data.beats, b => b, progress);
+				const beatStart = idx >= 0 && idx < data.beats.length ? data.beats[idx] : 0;
 				const phase = Math.max(0, progress - beatStart);
-				uniforms.uBeatPulse.value = Math.exp(-phase * 5);
-			} else {
-				uniforms.uBeatPulse.value = 0;
+				beatPulse = Math.exp(-phase * 5);
 			}
 
-			// Camera slow orbit + gentle bob
-			const orbitR = 22;
-			const orbitSpeed = 0.07;
-			camera.position.x = Math.sin(elapsed * orbitSpeed) * orbitR;
-			camera.position.z = Math.cos(elapsed * orbitSpeed) * orbitR;
-			camera.position.y = 9 + Math.sin(elapsed * 0.13) * 2.2;
-			camera.lookAt(0, 1, 0);
+			const accentHex = getForceUmiPalette()
+				? UMI_PALETTE.orange
+				: effectiveAccent(data.themeColor);
+			const accent = hexToRgbF(accentHex);
+			const cream = hexToRgbF(UMI_PALETTE.cream);
+			const dark = hexToRgbF(UMI_PALETTE.warmDarkDeep);
 
-			renderer.render(scene, camera);
-			frameId = win.requestAnimationFrame(animate);
-		};
+			gl.uniform1f(state.uTimeLoc, elapsed);
+			gl.uniform1f(state.uBassLoc, bass);
+			gl.uniform1f(state.uMidLoc, mid);
+			gl.uniform1f(state.uHighLoc, high);
+			gl.uniform1f(state.uBeatPulseLoc, beatPulse);
+			gl.uniform2f(state.uResolutionLoc, gl.canvas.width, gl.canvas.height);
+			gl.uniform3f(state.uAccentLoc, accent[0], accent[1], accent[2]);
+			gl.uniform3f(state.uCreamLoc, cream[0], cream[1], cream[2]);
+			gl.uniform3f(state.uDarkLoc, dark[0], dark[1], dark[2]);
 
-		if (props.isEnabled) {
-			frameId = win.requestAnimationFrame(animate);
-		}
-
-		return () => {
-			if (frameId) win.cancelAnimationFrame(frameId);
-			unsubPalette();
-			ro.disconnect();
-			geometry.dispose();
-			material.dispose();
-			renderer.dispose();
-			if (renderer.domElement.parentNode === container) {
-				container.removeChild(renderer.domElement);
-			}
-		};
-	}, [rhythmData, props.isEnabled, props.themeColor]);
+			gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+		},
+		[]
+	);
 
 	return (
-		<div
-			ref={containerRef}
-			style={{
-				width: "100%",
-				height: "100%",
-				background: UMI_PALETTE.warmDarkDeep
-			}}
+		<AnimatedCanvas
+			isEnabled={props.isEnabled}
+			data={trackData}
+			contextType="webgl2"
+			onInit={onInit}
+			onResize={onResize}
+			onRender={onRender as any}
+			style={{ width: "100%", height: "100%" }}
 		/>
 	);
 }

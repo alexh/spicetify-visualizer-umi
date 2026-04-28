@@ -11,10 +11,7 @@ import UmiGaugeCluster from "./components/renderer/umi/UmiGaugeCluster";
 import UmiKaleidoscope from "./components/renderer/umi/UmiKaleidoscope";
 import UmiSpirograph from "./components/renderer/umi/UmiSpirograph";
 import UmiTieDyeBloom from "./components/renderer/umi/UmiTieDyeBloom";
-// UmiTerrain (three.js) temporarily disabled — spicetify-creator's
-// webpack config trips on three.js's class-inheritance chain at
-// module load. Tracked separately; the rest of the renderers work.
-// import UmiTerrain from "./components/renderer/umi/UmiTerrain";
+import UmiTerrain from "./components/renderer/umi/UmiTerrain";
 import { MainMenuButton } from "./menu";
 import { createVisualizerWindow } from "./window";
 import { useFullscreenElement } from "./hooks";
@@ -62,6 +59,11 @@ const RENDERERS: RendererDefinition[] = [
 		id: "umi-tiedye",
 		name: "UMI / Tie-Dye Bloom",
 		renderer: UmiTieDyeBloom
+	},
+	{
+		id: "umi-terrain",
+		name: "UMI / Terrain (3D)",
+		renderer: UmiTerrain
 	},
 	{
 		id: "ncs",
