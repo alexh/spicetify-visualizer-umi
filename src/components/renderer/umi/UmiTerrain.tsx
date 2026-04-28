@@ -45,7 +45,12 @@ function hexToRgbF(hex: string): [number, number, number] {
 }
 
 export default function UmiTerrain(props: RendererProps) {
-	const containerRef = useRef<HTMLDivElement | null>(null);
+	// Canvas is rendered as a JSX element so React owns it and won't
+	// strip it out on re-render (which is what happened when we
+	// appendChild'd it manually into a parent div — React reconciled
+	// the div's children to the empty JSX children list and the
+	// canvas vanished after the first re-render).
+	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
 	// Per-track precomputation. Same memoisation, but the renderer
 	// reads it through a ref so changes don't re-trigger the GL setup.
@@ -81,21 +86,13 @@ export default function UmiTerrain(props: RendererProps) {
 	// One-time GL setup, animation loop, cleanup. Empty deps — runs
 	// exactly once on mount, tears down exactly once on unmount.
 	useEffect(() => {
-		const container = containerRef.current;
-		if (!container) return;
-		const win = container.ownerDocument.defaultView;
+		const canvas = canvasRef.current;
+		if (!canvas) return;
+		const win = canvas.ownerDocument.defaultView;
 		if (!win) return;
-
-		// Create canvas + GL context
-		const canvas = container.ownerDocument.createElement("canvas");
-		canvas.style.width = "100%";
-		canvas.style.height = "100%";
-		canvas.style.display = "block";
-		container.appendChild(canvas);
 
 		const gl = canvas.getContext("webgl2") as WebGL2RenderingContext | null;
 		if (!gl) {
-			container.removeChild(canvas);
 			console.error("[UmiTerrain] WebGL2 not supported in this canvas");
 			return;
 		}
@@ -114,10 +111,7 @@ export default function UmiTerrain(props: RendererProps) {
 
 		const vs = compile(gl.VERTEX_SHADER, TERRAIN_VERT_SHADER, "vertex");
 		const fs = compile(gl.FRAGMENT_SHADER, TERRAIN_FRAG_SHADER, "fragment");
-		if (!vs || !fs) {
-			container.removeChild(canvas);
-			return;
-		}
+		if (!vs || !fs) return;
 
 		const program = gl.createProgram()!;
 		gl.attachShader(program, vs);
@@ -125,7 +119,6 @@ export default function UmiTerrain(props: RendererProps) {
 		gl.linkProgram(program);
 		if (!gl.getProgramParameter(program, gl.LINK_STATUS) && !gl.isContextLost()) {
 			console.error("[UmiTerrain] program link error", gl.getProgramInfoLog(program));
-			container.removeChild(canvas);
 			return;
 		}
 
@@ -244,16 +237,16 @@ export default function UmiTerrain(props: RendererProps) {
 			gl.deleteShader(vs);
 			gl.deleteShader(fs);
 			gl.deleteBuffer(quadBuffer);
-			if (canvas.parentNode === container) container.removeChild(canvas);
 		};
 	}, []);
 
 	return (
-		<div
-			ref={containerRef}
+		<canvas
+			ref={canvasRef}
 			style={{
 				width: "100%",
 				height: "100%",
+				display: "block",
 				background: UMI_PALETTE.warmDarkDeep
 			}}
 		/>
