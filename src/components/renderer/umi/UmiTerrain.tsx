@@ -3,7 +3,7 @@
 // quad / per-frame uniforms) so we don't drag three.js into the
 // spicetify-creator bundle.
 
-import React, { useCallback, useContext, useMemo } from "react";
+import React, { useCallback, useContext, useEffect, useMemo, useRef } from "react";
 import AnimatedCanvas from "../../AnimatedCanvas";
 import { ErrorHandlerContext, ErrorRecovery } from "../../../error";
 import { RendererProps } from "../../../app";
@@ -60,6 +60,15 @@ function hexToRgbF(hex: string): [number, number, number] {
 
 export default function UmiTerrain(props: RendererProps) {
 	const onError = useContext(ErrorHandlerContext);
+	// Stable ref so onInit/onResize/onRender stay reference-stable across
+	// re-renders. Without this, AnimatedCanvas's init effect (deps:
+	// [contextType, onInit]) would re-fire whenever React provides a new
+	// onError reference and call gl.getContext again, sometimes with a
+	// transient null on song-change reconciliation.
+	const onErrorRef = useRef(onError);
+	useEffect(() => {
+		onErrorRef.current = onError;
+	}, [onError]);
 
 	const trackData = useMemo<CanvasData | null>(() => {
 		if (!props.audioAnalysis) return null;
@@ -77,7 +86,13 @@ export default function UmiTerrain(props: RendererProps) {
 	const onInit = useCallback(
 		(gl: WebGL2RenderingContext | null): RendererState => {
 			if (!gl) {
-				onError("Error: WebGL2 is not supported", ErrorRecovery.NONE);
+				// Transient null can happen on song change as React re-runs
+				// the AnimatedCanvas effects; treat it as a recoverable blip
+				// and bail silently. The next reconcile will give us a real
+				// context and re-init. Only true initial-mount failure would
+				// indicate WebGL2 isn't supported, and that's rare enough on
+				// Spotify's Chromium that we just log to the console.
+				console.warn("[UmiTerrain] gl context unavailable at init");
 				return { isError: true };
 			}
 
@@ -88,7 +103,7 @@ export default function UmiTerrain(props: RendererProps) {
 				if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS) && !gl.isContextLost()) {
 					const log = gl.getShaderInfoLog(sh);
 					console.error(`[UmiTerrain] '${name}' shader compile error`, log);
-					onError(`Error: Failed to compile '${name}' shader`, ErrorRecovery.NONE);
+					onErrorRef.current(`Error: Failed to compile '${name}' shader`, ErrorRecovery.SONG_CHANGE);
 					return null;
 				}
 				return sh;
@@ -102,7 +117,7 @@ export default function UmiTerrain(props: RendererProps) {
 				if (!gl.getProgramParameter(p, gl.LINK_STATUS) && !gl.isContextLost()) {
 					const log = gl.getProgramInfoLog(p);
 					console.error(`[UmiTerrain] program link error`, log);
-					onError("Error: Failed to link terrain shader program", ErrorRecovery.NONE);
+					onErrorRef.current("Error: Failed to link terrain shader program", ErrorRecovery.SONG_CHANGE);
 					return null;
 				}
 				return p;
@@ -142,7 +157,7 @@ export default function UmiTerrain(props: RendererProps) {
 				startTime: performance.now()
 			};
 		},
-		[onError]
+		[]
 	);
 
 	const onResize = useCallback(
