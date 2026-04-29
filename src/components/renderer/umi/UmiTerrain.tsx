@@ -231,7 +231,14 @@ export default function UmiTerrain(props: RendererProps) {
 			onInit={onInit}
 			onResize={onResize}
 			onRender={onRender as any}
-			style={{ width: "100%", height: "100%" }}
+			style={{
+				width: "100%",
+				height: "100%",
+				// Opaque warm-dark CSS background so the canvas never
+				// reads as white through a hidden/transparent state on
+				// song-change loading transitions.
+				background: UMI_PALETTE.warmDarkDeep
+			}}
 		/>
 	);
 }
