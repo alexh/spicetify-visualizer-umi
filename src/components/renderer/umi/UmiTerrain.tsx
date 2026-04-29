@@ -158,7 +158,13 @@ export default function UmiTerrain(props: RendererProps) {
 		) => {
 			if (state.isError || !gl) return;
 
-			gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+			// Bail if canvas hasn't been laid out yet. Without this guard
+			// uResolution = (0, 0) → shader gets NaN → GPU paints white.
+			const w = gl.canvas.width;
+			const h = gl.canvas.height;
+			if (w < 1 || h < 1) return;
+
+			gl.viewport(0, 0, w, h);
 			gl.clearColor(31 / 255, 20 / 255, 16 / 255, 1); // warmDarkDeep
 			gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -168,7 +174,13 @@ export default function UmiTerrain(props: RendererProps) {
 			gl.vertexAttribPointer(state.inPositionLoc, 2, gl.FLOAT, false, 0, 0);
 
 			const elapsed = (performance.now() - state.startTime) / 1000;
-			const progress = Spicetify.Player.getProgress() / 1000;
+			const rawProgress = Spicetify.Player.getProgress();
+			const progress =
+				typeof rawProgress === "number" && isFinite(rawProgress)
+					? rawProgress / 1000
+					: 0;
+
+			const safe = (v: number) => (isFinite(v) ? v : 0);
 
 			let bass = 0,
 				mid = 0,
@@ -176,9 +188,9 @@ export default function UmiTerrain(props: RendererProps) {
 			if (data.rhythm.length > 0) {
 				const raw = sampleBands(data.rhythm, progress);
 				const three = downsampleBands(raw, 3);
-				bass = three[0] ?? 0;
-				mid = three[1] ?? 0;
-				high = three[2] ?? 0;
+				bass = safe(three[0] ?? 0);
+				mid = safe(three[1] ?? 0);
+				high = safe(three[2] ?? 0);
 			}
 
 			let beatPulse = 0;
@@ -186,7 +198,7 @@ export default function UmiTerrain(props: RendererProps) {
 				const idx = binarySearchIndex(data.beats, b => b, progress);
 				const beatStart = idx >= 0 && idx < data.beats.length ? data.beats[idx] : 0;
 				const phase = Math.max(0, progress - beatStart);
-				beatPulse = Math.exp(-phase * 5);
+				beatPulse = safe(Math.exp(-phase * 5));
 			}
 
 			const accentHex = getForceUmiPalette()

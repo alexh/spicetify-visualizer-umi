@@ -138,7 +138,12 @@ vec3 shade(vec3 p, vec3 rd) {
 
 void main() {
     vec2 uv = fragUV;
-    uv.x *= uResolution.x / uResolution.y;
+    // Guard against 0/0 NaN when the canvas briefly has zero
+    // dimensions during a song-change layout flip — without this,
+    // every pixel evaluates to NaN and the GPU paints the whole
+    // surface white.
+    float aspect = uResolution.y > 0.5 ? uResolution.x / uResolution.y : 1.0;
+    uv.x *= aspect;
 
     // --- camera (slow orbit + bob) ---
     float orbitSpeed = 0.07;
